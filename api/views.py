@@ -25,7 +25,7 @@ class ProfileView(APIView):
 
         if not name.isalpha():
             return Response(
-                {"status": "error", "message": "Invalid type"},
+                {"status": "error", "message": "Name must contain only letters"},
                 status=status.HTTP_422_UNPROCESSABLE_ENTITY
             )
 
@@ -104,7 +104,7 @@ class ProfileDetailView(APIView):
             return None
 
 
-    def retrieve(self, request, id):
+    def get(self, request, id):
         profile = self.get_object(id)
 
         if not profile:

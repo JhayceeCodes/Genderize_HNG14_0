@@ -18,7 +18,7 @@ def genderize(name):
 
     return {
         "gender": data["gender"],
-        "probability": data["probability"],
+        "probability": round(data["probability"], 2),
         "count": data["count"]
     }
 
@@ -46,5 +46,5 @@ def nationalize(name):
 
     return {
         "country_id": best["country_id"],
-        "probability": best["probability"]
+        "probability": round(best["probability"], 2)
     }
