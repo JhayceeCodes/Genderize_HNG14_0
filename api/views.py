@@ -1,75 +1,132 @@
-import requests
-from django.http import JsonResponse
+from rest_framework.views import APIView
+from rest_framework.response import Response
 from rest_framework import status
-from django.utils import timezone
+from .models import Profile
+from .services import genderize, agify, nationalize, ExternalAPIError
+from .utils import get_age_group, format_profile, format_profile_list
 
 
-def classify_name(request):
-    name = request.GET.get("name")
+class ProfileView(APIView):
 
-    if not name:
-        return JsonResponse({"status": "error",
-                             "message": "Name parameter is required"}, status=status.HTTP_400_BAD_REQUEST)
+    def post(self, request):
+        name = request.data.get("name")
 
-    if not name.isalpha():
-        return JsonResponse({"status": "error",
-                             "message": "Name must contain only letters"}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        if not name:
+            return Response(
+                {"status": "error", "message": "Missing or empty name"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not isinstance(name, str):
+            return Response(
+                {"status": "error", "message": "Invalid type"},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY
+            )
+
+        if not name.isalpha():
+            return Response(
+                {"status": "error", "message": "Invalid type"},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY
+            )
+
+        name = name.lower()
 
 
-    try:
-        response = requests.get("https://api.genderize.io", 
-                                params={"name": name})
-        
+        existing = Profile.objects.filter(name=name).first()
+        if existing:
+            return Response({
+                "status": "success",
+                "message": "Profile already exists",
+                "data": format_profile(existing)
+            })
 
-        if response.status_code >= 500:
-            return JsonResponse({
+        try:
+            g = genderize(name)
+            a = agify(name)
+            n = nationalize(name)
+
+        except ExternalAPIError as e:
+            return Response({
                 "status": "error",
-                "message": "Upstream service unavailable"
+                "message": f"{e.api_name} returned an invalid response"
             }, status=status.HTTP_502_BAD_GATEWAY)
 
-        api_data = response.json()
-
-        gender = api_data.get("gender")
-        sample_size = api_data.get("count")
-        probability = api_data.get("probability")
-        processed_at = timezone.now().strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-        is_confident = (
-            probability is not None and
-            sample_size is not None and
-            probability >= 0.7 and
-            sample_size >= 100
+        profile = Profile.objects.create(
+            name=name,
+            gender=g["gender"],
+            gender_probability=g["probability"],
+            sample_size=g["count"],
+            age=a["age"],
+            age_group=get_age_group(a["age"]),
+            country_id=n["country_id"],
+            country_probability=n["probability"],
         )
 
-        if gender is None or sample_size in (None, 0):
-            return JsonResponse({"status": "error",
-                             "message": "No prediction available for the provided name"}, 
-                             status=status.HTTP_422_UNPROCESSABLE_ENTITY)
-
-        new_response = {
-                        "status": "success",
-                        "data": {
-                            "name": name,
-                            "gender": gender,
-                            "probability": probability,
-                            "sample_size": sample_size,
-                            "is_confident": is_confident,
-                            "processed_at": processed_at
-                        }    
-                    }
-
-        return JsonResponse(new_response)
+        return Response({
+            "status": "success",
+            "data": format_profile(profile)
+        }, status=status.HTTP_201_CREATED)
     
-    except requests.Timeout:
-        return JsonResponse({
-            "status": "error",
-            "message": "Upstream request timed out"
-        }, status=status.HTTP_502_BAD_GATEWAY)
+    def get(self, request):
+        profiles = Profile.objects.all()
 
-    except requests.RequestException:
-        return JsonResponse({
-            "status": "error",
-            "message": "Failed to fetch data from external API"
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        gender = request.GET.get("gender")
+        country = request.GET.get("country_id")
+        age_group = request.GET.get("age_group")
 
+        if gender:
+            profiles = profiles.filter(gender__iexact=gender)
+
+        if country:
+            profiles = profiles.filter(country_id__iexact=country)
+
+        if age_group:
+            profiles = profiles.filter(age_group__iexact=age_group)
+
+        data = [format_profile_list(p) for p in profiles]
+
+        return Response({
+            "status": "success",
+            "count": len(data),
+            "data": data
+        })
+    
+
+
+
+class ProfileDetailView(APIView):
+    def get_object(self, id):
+        try:
+            return Profile.objects.get(id=id)
+        except Profile.DoesNotExist:
+            return None
+
+
+    def retrieve(self, request, id):
+        profile = self.get_object(id)
+
+        if not profile:
+            return Response(
+                {"status": "error", "message": "Profile not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        return Response({
+            "status": "success",
+            "data": format_profile(profile)
+        })
+
+
+    def delete(self, request, id):
+        profile = self.get_object(id)
+
+        if not profile:
+            return Response(
+                {"status": "error", "message": "Profile not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        profile.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
